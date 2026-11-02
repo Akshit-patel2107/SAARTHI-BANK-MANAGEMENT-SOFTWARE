@@ -1,0 +1,6 @@
+{
+  "name": "SetuBank - Digital Banking Automation Platform",
+  "description": "Next-generation digital banking automation platform modernizing routine banking services, virtual queues, KYC verification, and complaints across India.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
