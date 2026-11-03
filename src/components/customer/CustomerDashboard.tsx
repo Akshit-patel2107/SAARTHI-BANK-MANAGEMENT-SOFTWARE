@@ -21,9 +21,11 @@ import {
   RefreshCw,
   Search,
   BookOpen,
-  HelpCircle,
   Clock,
   ArrowRight,
+  Cpu,
+  Printer,
+  Monitor,
 } from 'lucide-react';
 import {
   BankAccount,
@@ -46,6 +48,7 @@ interface CustomerDashboardProps {
   onSelectService: (serviceId: string) => void;
   popularServices: BankingService[];
   onOpenAssistant: () => void;
+  onOpenKioskSimulator?: () => void;
 }
 
 export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
@@ -58,6 +61,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
   onSelectService,
   popularServices,
   onOpenAssistant,
+  onOpenKioskSimulator,
 }) => {
   const t = translations[language];
   const [showBalance, setShowBalance] = useState(true);
@@ -202,6 +206,35 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({
           </div>
         </div>
       </div>
+
+      {/* 2.5 Branch Kiosk Self-Service Simulator Banner */}
+      {onOpenKioskSimulator && (
+        <div className="bg-gradient-to-r from-blue-900 via-slate-900 to-teal-950 text-white rounded-2xl p-5 border border-blue-800 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-start sm:items-center space-x-4">
+            <div className="w-12 h-12 rounded-xl bg-teal-500/20 text-teal-400 flex items-center justify-center shrink-0 border border-teal-500/30">
+              <Cpu className="w-6 h-6" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center space-x-2">
+                <span className="font-bold text-sm text-white">Smart Branch Kiosk Terminal Simulator</span>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-400/20 text-teal-300 border border-teal-400/30">
+                  Touchscreen Mode
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 max-w-2xl">
+                Experience physical branch automation: optical passbook line-printer, smart cheque drop box with OCR scanning, and NFC contactless card authentication.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onOpenKioskSimulator}
+            className="px-4 py-2.5 bg-teal-400 hover:bg-teal-300 text-slate-950 rounded-xl text-xs font-bold flex items-center justify-center space-x-2 transition-all shrink-0 shadow-xs hover:shadow-md"
+          >
+            <Monitor className="w-4 h-4" />
+            <span>Launch Kiosk Terminal</span>
+          </button>
+        </div>
+      )}
 
       {/* 3. Live Queue Token Banner (if active) */}
       {userActiveToken && (

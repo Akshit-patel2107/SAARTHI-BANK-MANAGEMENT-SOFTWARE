@@ -8,8 +8,24 @@ import {
   INITIAL_QUEUES,
   INITIAL_COMPLAINTS,
   INITIAL_AUDIT_LOGS,
+  INITIAL_SERVICES,
+  INITIAL_BRANCHES,
+  INITIAL_KIOSKS,
 } from './src/data/seedData';
-import { BankingRequest, VirtualQueueToken, Complaint, AuditLogItem } from './src/types/banking';
+import {
+  VERIFIED_BANKING_KNOWLEDGE,
+  searchVerifiedKnowledge,
+  getVerifiedDocById,
+  VerifiedKnowledgeDoc,
+} from './src/data/verifiedKnowledge';
+import {
+  BankingRequest,
+  VirtualQueueToken,
+  Complaint,
+  AuditLogItem,
+  BranchKiosk,
+  UserRole,
+} from './src/types/banking';
 
 dotenv.config();
 
@@ -26,6 +42,7 @@ let requestsStore: BankingRequest[] = [...INITIAL_REQUESTS];
 let queueStore: VirtualQueueToken[] = [...INITIAL_QUEUES];
 let complaintsStore: Complaint[] = [...INITIAL_COMPLAINTS];
 let auditLogStore: AuditLogItem[] = [...INITIAL_AUDIT_LOGS];
+let kiosksStore: BranchKiosk[] = [...INITIAL_KIOSKS];
 
 // Initialize GoogleGenAI SDK safely
 let aiClient: GoogleGenAI | null = null;
@@ -44,9 +61,7 @@ if (
   });
 }
 
-// ---------------- API Routes ----------------
-
-// 1. Banking Requests API
+// ---------------- 1. Banking Requests API ----------------
 app.get('/api/requests', (req, res) => {
   res.json({ success: true, data: requestsStore });
 });
@@ -123,7 +138,7 @@ app.patch('/api/requests/:id', (req, res) => {
   return res.json({ success: true, data: updated });
 });
 
-// 2. Virtual Queue & Appointments API
+// ---------------- 2. Virtual Queue & Appointments API ----------------
 app.get('/api/queues', (req, res) => {
   res.json({ success: true, data: queueStore });
 });
@@ -186,7 +201,7 @@ app.patch('/api/queues/:id/status', (req, res) => {
   return res.json({ success: true, data: token, queue: queueStore });
 });
 
-// 3. Complaints & Grievance API
+// ---------------- 3. Complaints & Grievance API ----------------
 app.get('/api/complaints', (req, res) => {
   res.json({ success: true, data: complaintsStore });
 });
@@ -214,161 +229,612 @@ app.post('/api/complaints', (req, res) => {
   return res.status(201).json({ success: true, data: complaint });
 });
 
-// 4. Audit Logs API
+// ---------------- 4. Kiosk Management API ----------------
+app.get('/api/kiosks', (req, res) => {
+  res.json({ success: true, data: kiosksStore });
+});
+
+app.patch('/api/kiosks/:id/status', (req, res) => {
+  const { id } = req.params;
+  const { status, alerts, officerName } = req.body;
+  const kiosk = kiosksStore.find((k) => k.id === id);
+
+  if (!kiosk) {
+    return res.status(404).json({ success: false, message: 'Kiosk not found' });
+  }
+
+  if (status) kiosk.status = status;
+  if (alerts) kiosk.activeAlerts = alerts;
+  kiosk.lastPing = 'Just now';
+
+  auditLogStore.unshift({
+    id: `LOG-${Date.now()}`,
+    timestamp: new Date().toISOString().replace('T', ' ').substring(0, 19),
+    actor: officerName || 'Branch Kiosk Supervisor',
+    actorRole: 'BANK_OFFICER',
+    action: `Updated kiosk ${kiosk.name} status to ${status || 'HEALTH_UPDATED'}`,
+    targetEntity: 'KIOSK',
+    targetId: kiosk.id,
+    ipHash: '10.42.18.24',
+    checksum: `sha256-${Math.random().toString(36).substring(2, 12)}`,
+  });
+
+  return res.json({ success: true, data: kiosk, kiosks: kiosksStore });
+});
+
+app.post('/api/kiosks/:id/action', (req, res) => {
+  const { id } = req.params;
+  const { actionType, details } = req.body;
+  const kiosk = kiosksStore.find((k) => k.id === id);
+
+  if (!kiosk) {
+    return res.status(404).json({ success: false, message: 'Kiosk not found' });
+  }
+
+  kiosk.todayTransactions += 1;
+  kiosk.lastPing = 'Just now (1s ago)';
+
+  if (actionType === 'REPLENISH_PAPER') {
+    kiosk.passbookPrinterStatus = 'OK';
+    kiosk.activeAlerts = kiosk.activeAlerts.filter((a) => !a.toLowerCase().includes('paper'));
+  } else if (actionType === 'CASH_BALANCING') {
+    kiosk.cashDispenserStatus = 'OK';
+    kiosk.activeAlerts = kiosk.activeAlerts.filter((a) => !a.toLowerCase().includes('cassette'));
+  } else if (actionType === 'REBOOT_DIAGNOSTIC') {
+    kiosk.status = 'ONLINE';
+    kiosk.activeAlerts = [];
+  }
+
+  return res.json({
+    success: true,
+    message: `Kiosk action '${actionType}' completed successfully.`,
+    data: kiosk,
+  });
+});
+
+// ---------------- 5. Audit Logs API ----------------
 app.get('/api/audit-logs', (req, res) => {
   res.json({ success: true, data: auditLogStore });
 });
 
-// 5. Intelligent Banking Assistant (Gemini API with Customer vs Employee Dual Roles & English, Hindi, Gujarati support)
-app.post('/api/assistant/chat', async (req, res) => {
-  const { message, language = 'en', role = 'CUSTOMER', history = [] } = req.body;
+// ---------------- 6. Verified Banking Knowledge API ----------------
+app.get('/api/assistant/knowledge', (req, res) => {
+  const { q = '', role = 'CUSTOMER', bank = 'Janata Sahakari Bank Ltd.' } = req.query;
+  const results = searchVerifiedKnowledge(String(q), role as UserRole, String(bank));
+  res.json({ success: true, data: results });
+});
 
-  if (!message || typeof message !== 'string') {
-    return res.status(400).json({ success: false, message: 'Prompt message required' });
-  }
-
-  const isEmployee = role === 'BANK_OFFICER';
-
-  const systemInstruction = isEmployee
-    ? `
-You are "Sahayak AI" - Internal Banking Knowledge & Operational SOP Desk for bank employees and branch officers of Janata Sahakari Bank / Saarthi Banking Platform.
-You adhere strictly to Reserve Bank of India (RBI) regulations, Master Directions, DPDP Act 2023, and standardized Indian branch operations SOPs.
-
-Your primary purpose:
-1. Provide accurate operational guidance on RBI Master Directions (KYC guidelines, Risk Categorization: High Risk = 2 years, Medium = 8 years, Low = 10 years; STR/AML thresholds).
-2. Explain branch Standard Operating Procedures (SOPs): Safe deposit locker break-open protocols, Cash Retention Limits and overnight vault insurance thresholds, Inoperative/Dormant account reactivation, Specimen Signature mismatch escalation.
-3. Guide officers on Turn Around Times (TAT) and SLAs under the RBI Integrated Ombudsman Scheme (30-day internal resolution limit).
-4. Assist with branch self-service kiosk fleet management, cash cassette balancing, and hardware maintenance.
-
-SECURITY & ETHICS:
-- Do NOT expose customer raw secrets or non-masked PII.
-- Maintain a professional, authoritative, yet helpful operational banking officer tone.
-- In answers, structure with clear regulatory references (e.g., RBI Master Direction on KYC 2016, Banking Regulation Act 1949).
-
-LANGUAGE:
-- If language is 'hi': Respond in clear, formal Hindi banking terminology (राजभाषा/बैंकिंग शब्दावली).
-- If language is 'gu': Respond in formal, respectful Gujarati banking terminology.
-- If language is 'en': Respond in crisp Indian banking enterprise English.
-`
-    : `
-You are "Sahayak AI" (સહાયક / सहायक), an intelligent and respectful digital banking guide for customers of Saarthi Banking Platform adhering to Reserve Bank of India (RBI) regulations and the Digital Personal Data Protection (DPDP) Act 2023.
-
-Your primary purpose:
-1. Explain banking services (KYC, nominee registration Form DA-1, address update, cheque book issue, interest & TDS certificate Form 16A, Mudra / MSME loans, Senior Citizen Jeevan Pramaan digital life certificate) in simple, accessible, clear terms.
-2. Guide customers on required documents, avoiding unnecessary physical branch visits.
-3. Help customers understand failed transactions (e.g. UPI debit timeouts with RBI statutory T+1 / T+5 reversal mandates, ATM cash dispenser failures).
-4. Assist in drafting clear banking complaints with required fields (Transaction RRN, UTR, Date, Terminal ID).
-
-CRITICAL SECURITY RULES:
-- NEVER ask the user to share passwords, UPI PINs, ATM PINs, CVVs, or OTPs.
-- Explicitly remind users if they mention sharing private credentials that the bank NEVER asks for PINs or passwords.
-- Be extremely polite, clear, and reassuring, especially for senior citizens or first-time digital banking users.
-
-LANGUAGE:
-- If language is 'hi': Respond in clear, respectful Hindi (हिन्दी / देवनागरी लिपि).
-- If language is 'gu': Respond in natural, polite Gujarati (ગુજરાતી લિપિ).
-- If language is 'en': Respond in professional, warm Indian English.
-Keep answers concise (2 to 4 short paragraphs or bullet points).
-`;
-
-  // Fallback responder with rich domain knowledge
-  const generateFallbackResponse = (userPrompt: string, lang: string, userRole: string): string => {
-    const lower = userPrompt.toLowerCase();
-
-    // 1. Employee specific fallbacks
-    if (userRole === 'BANK_OFFICER') {
-      if (lower.includes('kyc') || lower.includes('periodic') || lower.includes('frequency') || lower.includes('risk')) {
-        return `**RBI Master Direction on KYC (Periodic Updation SOP)**:\n\n1. **Risk Categorization & Frequency**:\n   • **High-Risk Customers**: Fresh KYC documents required every **2 years**.\n   • **Medium-Risk Customers**: Fresh KYC documents required every **8 years**.\n   • **Low-Risk Customers**: Fresh KYC documents required every **10 years** (Self-declaration accepted if address has not changed).\n2. **Digital Verification**: For low-risk accounts, digital re-KYC via DigiLocker / Aadhaar OTP or Branch Kiosk is permitted under Section 38 of RBI Master Directions.\n3. **Non-Compliance Protocol**: In case of non-furnishing after 3 months reminder, partial freezing (credits allowed, debits stopped) may be imposed with Competent Authority approval.`;
-      }
-
-      if (lower.includes('locker') || lower.includes('break') || lower.includes('open') || lower.includes('death')) {
-        return `**Branch SOP: Safe Deposit Locker Break-Open Procedure**:\n\n1. **Prerequisites & Notice Periods**:\n   • Overdue rent / non-operation: Minimum 3 registered notices to the hirer spread over 6 months.\n   • Notice of intended break-open with exact date and time dispatched at least 15 days in advance.\n2. **Mandatory Attendance Committee**:\n   • Branch Manager / Assistant General Manager (Chairperson)\n   • Independent Bank Officer (Custodian of Safe Deposit Vault)\n   • Authorized certified locksmith\n   • Two respectable independent external witnesses (non-bank employees).\n3. **Documentation & Custody**:\n   • Mandatory high-definition video recording of opening and seal integrity.\n   • Preparation of detailed Inventory Register (Annexure L-4) signed by all present.\n   • Sealing of contents in a tamper-evident canvas packet deposited in the branch main strong room.`;
-      }
-
-      if (lower.includes('retention') || lower.includes('cash limit') || lower.includes('eod') || lower.includes('vault')) {
-        return `**Branch SOP: Cash Retention Limit & Vault Insurance Guidelines**:\n\n1. **Overnight Cash Retention Cap**: Every branch is assigned a sanctioned overnight cash retention limit based on branch category (e.g., ₹25,00,000 for Metro / Semi-Urban branches).\n2. **Excess Cash Protocol**: If EOD closing cash exceeds the sanctioned retention limit due to unexpected late receipts:\n   • Attempt immediate remittance to the nearest Currency Chest via authorized cash-in-transit (CIT) armoured van.\n   • If remittance after banking hours is not viable, lodge excess cash in the Double-Lock Treasury Strong Room.\n   • Send immediate formal email intimation to Zonal Operations Head and Chief Vigilance Officer for excess insurance endorsement coverage.`;
-      }
-
-      if (lower.includes('ombudsman') || lower.includes('tat') || lower.includes('complaint') || lower.includes('grievance')) {
-        return `**Turn Around Time (TAT) & RBI Ombudsman Compliance**:\n\n1. **Internal Bank Resolution Window**: Under the Reserve Bank - Integrated Ombudsman Scheme (RB-IOS), the bank has maximum **30 calendar days** from the date of receipt to resolve customer grievances.\n2. **Escalation Trigger**: If unaddressed or if the resolution is rejected by the customer after 30 days, the customer may lodge a dispute on the RBI CMS Portal (https://cms.rbi.org.in).\n3. **Statutory Penalties**: Under RBI Harmonisation of TAT circular, failure to auto-reverse failed digital transactions (UPI/ATM/IMPS) attracts a statutory compensation of ₹100 per day payable to the customer beyond T+1/T+5 days.`;
-      }
-
-      if (lower.includes('kiosk') || lower.includes('cassette') || lower.includes('machine') || lower.includes('hardware')) {
-        return `**Self-Service Kiosk Maintenance & Cassette SOP**:\n\n1. **Daily Morning Health Check**: Branch Kiosk Custodian must inspect thermal receipt printer paper spool, passbook printer ribbon alignment, and barcode scanner connectivity.\n2. **Cash Deposit Cassette Reconciliation**: Check current bill count vs CBS teller terminal journal. Ensure reject bin has not exceeded 50 notes.\n3. **Emergency Reboot / Maintenance Mode**: Turn physical keyswitch to Supervisor Position (Pos-B) before opening rear access panel to prevent security trip alarms.`;
-      }
-
-      return `**Sahayak AI Employee Desk — Operational Assistance**:\n\nI can assist you with:\n• **RBI Regulatory Circulars**: KYC categorization, STR/AML thresholds, and Priority Sector Lending guidelines.\n• **Branch SOPs**: Safe deposit locker break-opens, Cash retention limit breach protocols, Specimen signature verification disputes.\n• **Grievance Redressal**: Turn Around Times (TAT) and Banking Ombudsman dispute documentation.\n• **Kiosk Fleet**: Hardware diagnostics, cassette balancing, and terminal health alerts.\n\nPlease enter the regulation, SOP, or operational topic you wish to consult.`;
-    }
-
-    // 2. Customer fallbacks
-    if (lower.includes('upi') || lower.includes('failed') || lower.includes('पैसा कट') || lower.includes('પૈસા કપાઈ')) {
-      if (lang === 'hi') {
-        return `नमस्ते। यदि आपका यूपीआई भुगतान असफल हुआ है किंतु खाते से राशि कट गई है, तो कृपया चिंता न करें:\n\n1. **आरबीआई नियमानुसार ऑटो-रिवर्सल**: अधिकांश असफल यूपीआई लेन-देन T+1 कार्यदिवस (अधिकतम 24-48 घंटे) में स्वतः वापस क्रेडिट हो जाते हैं।\n2. **शिकायत दर्ज करें**: यदि 48 घंटे में राशि वापस न आए, तो आप हमारे 'शिकायत निवारण केंद्र' में जाकर लेन-देन संदर्भ (RRN / UTR) दर्ज करके तत्काल विवाद दर्ज कर सकते हैं।\n3. **महत्वपूर्ण सुरक्षा सूचना**: बैंक कभी भी रिफंड के लिए कोई पिन (PIN) या ओटीपी (OTP) नहीं मांगता।`;
-      }
-      if (lang === 'gu') {
-        return `નમસ્તે. જો તમારું UPI પેમેન્ટ નિષ્ફળ ગયું છે પરંતુ ખાતામાંથી રકમ કપાઈ ગઈ છે, તો ચિંતા કરશો નહીં:\n\n1. **RBI નિયમાનુસાર ઓટો-રિવર્સલ**: સામાન્ય રીતે T+1 કાર્યકારી દિવસમાં રકમ આપોઆપ આપના ખાતામાં પરત જમા થઈ જાય છે.\n2. **ફરિયાદ નોંધાવો**: જો 48 કલાકમાં રકમ પરત ન આવે, તો 'ફરિયાદ નિવારણ કેન્દ્ર'માં જઈ ટ્રાન્ઝેક્શન RRN / UTR નંબર સાથે તુરંત ફરિયાદ નોંધાવો.\n3. **સુરક્ષા ચેતવણી**: બેંક રિફંડ માટે ક્યારેય PIN કે OTP માંગતી નથી.`;
-      }
-      return `Hello. If your UPI payment failed at the merchant but the amount was deducted from your account, please do not worry:\n\n1. **RBI Mandated Auto-Reversal**: Under RBI circular on Harmonisation of Turn Around Time (TAT), failed UPI debits are automatically credited back within T+1 working day.\n2. **Raise a Dispute**: If not credited after 24 hours, you can file an instant dispute under our **Grievance Center** using your 12-digit UPI RRN / UTR number.\n3. **Security Caution**: Bank staff or automated systems will NEVER ask for your UPI PIN, OTP, or card CVV for processing any refund.`;
-    }
-
-    if (lower.includes('nominee') || lower.includes('वारिस') || lower.includes('નોમિની') || lower.includes('नॉमिनी')) {
-      if (lang === 'hi') {
-        return `खाते में नॉमिनी (नामांकित व्यक्ति) जोड़ना बहुत सरल और पूरी तरह पेपरलेस है:\n\n1. **आवश्यक दस्तावेज़**: नॉमिनी का पूरा नाम, जन्म तिथि, संबंध (पति/पत्नी/पुत्र आदि), और आधार संख्या।\n2. **प्रक्रिया**: 'बैंकिंग सेवाएँ' > 'खाते में नॉमिनी जोड़ें' चुनें, फॉर्म भरें और डिजिटल रूप से जमा करें। 24 घंटे में शाखा प्रबंधक के अनुमोदन के बाद यह सक्रिय हो जाता है।\n3. इसके लिए शाखा जाने की कोई आवश्यकता नहीं है।`;
-      }
-      if (lang === 'gu') {
-        return `ખાતામાં નોમિની (વારસદાર) ઉમેરવું ખૂબ સરળ અને સંપૂર્ણ પેપરલેસ છે:\n\n1. **જરૂરી વિગતો**: નોમિનીનું પૂરું નામ, જન્મતારીખ, સંબંધ અને આધાર નંબર.\n2. **પ્રક્રિયા**: 'બેંકિંગ સેવાઓ' > 'વારસદાર ઉમેરો' પર જાઓ, ફોર્મ ભરો અને સબમિટ કરો. શાખામાં ગયા વગર 24 કલાકમાં અપડેટ થઈ જશે.`;
-      }
-      return `Adding or updating an Account Nominee is completely paperless on Sahayak AI:\n\n1. **Required Details**: Nominee full legal name, date of birth, relationship to account holder, and masked Aadhaar number.\n2. **Process**: Navigate to **Banking Services** > **Add / Update Account Nominee**. Fill the digital Form DA-1 and submit with OTP authorization.\n3. **Timeline**: The bank officer verifies and updates the nominee within 1 business day without requiring any physical branch visit.`;
-    }
-
-    if (lower.includes('cheque') || lower.includes('चेक') || lower.includes('ચેક')) {
-      if (lang === 'hi') {
-        return `नई चेक बुक मंगाना अब बहुत आसान है:\n\n1. **प्रक्रिया**: 'बैंकिंग सेवाएँ' > 'नई चेक बुक का अनुरोध' पर क्लिक करें।\n2. आप 25 या 50 पन्नों की वैयक्तिकृत (Personalized) चेक बुक चुन सकते हैं।\n3. यह 3 कार्यदिवसों के भीतर भारतीय डाक (Speed Post) द्वारा आपके पंजीकृत पते पर सुरक्षित पहुँचा दी जाएगी।`;
-      }
-      if (lang === 'gu') {
-        return `નવી ચેક બુક મંગાવવી ખૂબ સરળ છે:\n\n1. 'બેંકિંગ સેવાઓ' > 'નવી ચેક બુકની વિનંતી' પસંદ કરો.\n2. તમે 25 અથવા 50 પાનાની વ્યક્તિગત ચેક બુક પસંદ કરી શકો છો.\n3. 3 દિવસમાં ઇન્ડિયા પોસ્ટ દ્વારા તમારા નોંધાયેલા સરનામે પહોંચાડી દેવામાં આવશે.`;
-      }
-      return `Requesting a new cheque book is completely digital:\n\n1. Go to **Banking Services** > **Request New Cheque Book**.\n2. Select either 25 or 50 leaves personalized cheque book.\n3. Dispatched to your registered communication address via India Post Speed Post within 3 business days with active tracking.`;
-    }
-
-    // Default polite customer assistance
-    if (lang === 'hi') {
-      return `नमस्ते! मैं 'सहायक AI' आपका डिजिटल बैंकिंग मित्र हूँ।\n\nमैं आपकी निम्नलिखित सेवाओं में सहायता कर सकता हूँ:\n- बिना शाखा जाए नॉमिनी, पता या संपर्क विवरण बदलना\n- असफल यूपीआई या एटीएम लेन-देन की शिकायत दर्ज करना\n- डिजिटल टोकन व अपॉइंटमेंट बुक करना\n- ब्याज प्रमाणपत्र व चेक बुक मंगाना\n\nकृपया बताएं कि आज मैं आपकी क्या सहायता करूँ?`;
-    }
-    if (lang === 'gu') {
-      return `નમસ્તે! હું 'સહાયક AI' તમારો ડિજિટલ બેંકિંગ મિત્ર છું.\n\nહું તમને નીચેની સેવાઓમાં મદદ કરી શકું છું:\n- શાખામાં ગયા વગર નોમિની, સરનામું કે મોબાઈલ નંબર બદલવો\n- નિષ્ફળ UPI કે ATM ની ફરિયાદ નોંધાવવી\n- ડિજિટલ ટોકન અને એપોઇન્ટમેન્ટ બુક કરવી\n- વ્યાજ પ્રમાણપત્ર અને નવી ચેક બુક મેળવવી\n\nકૃપા કરીને જણાવો કે હું તમારી કેવી રીતે મદદ કરી શકું?`;
-    }
-    return `Hello! I am **Sahayak AI**, your personal banking guide.\n\nI can assist you with:\n- Paperless account updates (Nominee, Address, Registered Mobile/Email)\n- Resolving failed UPI or ATM transactions with statutory RBI guidelines\n- Generating digital branch queue tokens or appointments\n- Requesting cheque books, interest certificates, or loans\n\nHow may I help you today?`;
-  };
+// ---------------- 7. Authorized Backend AI Tools Execution Endpoint ----------------
+app.post('/api/assistant/tools/execute', (req, res) => {
+  const { toolName, args = {}, role = 'CUSTOMER' } = req.body;
 
   try {
-    if (aiClient) {
-      const generatePromise = aiClient.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: [
-          { role: 'user', parts: [{ text: `${systemInstruction}\n\nUser role: ${role}.\nLanguage selected: ${language}.\nUser message: ${message}` }] },
-        ],
-      });
+    switch (toolName) {
+      case 'get_available_services': {
+        const services = INITIAL_SERVICES.map((s) => ({
+          id: s.id,
+          title: s.title.en,
+          category: s.category,
+          estimatedDays: s.estimatedDays,
+          requiredDocuments: s.requiredDocuments,
+        }));
+        return res.json({ success: true, toolName, result: services });
+      }
 
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('AI response timeout')), 4000)
-      );
+      case 'get_service_requirements': {
+        const { serviceId } = args;
+        const s = INITIAL_SERVICES.find((x) => x.id === serviceId);
+        if (!s) {
+          return res.status(404).json({ success: false, message: 'Service not found in catalog.' });
+        }
+        return res.json({
+          success: true,
+          toolName,
+          result: {
+            serviceId: s.id,
+            title: s.title.en,
+            requiredDocuments: s.requiredDocuments,
+            estimatedDays: s.estimatedDays,
+            paperFormsAvoided: s.paperFormsAvoided,
+          },
+        });
+      }
 
-      const response: any = await Promise.race([generatePromise, timeoutPromise]);
-      const reply = response.text || generateFallbackResponse(message, language, role);
-      return res.json({ success: true, reply });
-    } else {
-      const reply = generateFallbackResponse(message, language, role);
-      return res.json({ success: true, reply });
+      case 'get_request_status': {
+        const { referenceNumber, customerEmail } = args;
+        let matched: BankingRequest[] = [];
+        if (referenceNumber) {
+          matched = requestsStore.filter(
+            (r) => r.referenceNumber.toLowerCase() === referenceNumber.toLowerCase()
+          );
+        } else if (customerEmail) {
+          matched = requestsStore.filter((r) => r.customerEmail === customerEmail);
+        }
+        return res.json({
+          success: true,
+          toolName,
+          result: matched.map((r) => ({
+            id: r.id,
+            referenceNumber: r.referenceNumber,
+            serviceName: r.serviceName,
+            status: r.status,
+            submittedAt: r.submittedAt,
+            estimatedCompletion: r.estimatedCompletion,
+            officerNotes: r.officerNotes,
+            auditTrail: r.auditTrail,
+          })),
+        });
+      }
+
+      case 'get_complaint_status': {
+        const { complaintNumber } = args;
+        const c = complaintsStore.find(
+          (x) => x.complaintNumber.toLowerCase() === (complaintNumber || '').toLowerCase()
+        );
+        if (!c) {
+          return res.status(404).json({ success: false, message: 'Complaint not found.' });
+        }
+        return res.json({
+          success: true,
+          toolName,
+          result: {
+            complaintNumber: c.complaintNumber,
+            category: c.category,
+            status: c.status,
+            description: c.description,
+            tatDeadline: c.tatDeadline,
+            resolutionRemarks: c.resolutionRemarks,
+            createdAt: c.createdAt,
+          },
+        });
+      }
+
+      case 'get_kiosk_status': {
+        const list = kiosksStore.map((k) => ({
+          id: k.id,
+          name: k.name,
+          status: k.status,
+          branchName: k.branchName,
+          lastPing: k.lastPing,
+          activeAlerts: k.activeAlerts,
+        }));
+        return res.json({ success: true, toolName, result: list });
+      }
+
+      case 'get_branch_information': {
+        const branches = INITIAL_BRANCHES.map((b) => ({
+          name: b.name,
+          city: b.city,
+          address: b.address,
+          currentWaitMins: b.avgWaitMinutes,
+          countersAvailable: b.countersAvailable,
+          openHours: b.openHours,
+        }));
+        return res.json({ success: true, toolName, result: branches });
+      }
+
+      case 'calculate_financial_figures': {
+        const { type = 'EMI', principal = 100000, rate = 10.5, tenorMonths = 36 } = args;
+        const P = Number(principal);
+        const annualRate = Number(rate);
+        const n = Number(tenorMonths);
+
+        if (type === 'EMI') {
+          const r = annualRate / (12 * 100);
+          const emi = Math.round((P * r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1));
+          const totalPayment = emi * n;
+          const totalInterest = totalPayment - P;
+          return res.json({
+            success: true,
+            toolName,
+            result: {
+              principal: P,
+              annualRatePercent: annualRate,
+              tenorMonths: n,
+              monthlyEmi: emi,
+              totalInterestPayable: totalInterest,
+              totalAmountPayable: totalPayment,
+              disclaimer: 'Figures calculated per standard diminishing balance method. Subject to bank processing charges & stamp duty.',
+            },
+          });
+        }
+
+        // Fixed Deposit Calculator
+        const quarters = n / 3;
+        const maturityValue = Math.round(P * Math.pow(1 + annualRate / 400, quarters));
+        return res.json({
+          success: true,
+          toolName,
+          result: {
+            principal: P,
+            annualRatePercent: annualRate,
+            tenorMonths: n,
+            maturityValue,
+            totalInterestEarned: maturityValue - P,
+            dicgcCoverage: 'Protected up to ₹5,00,000 by DICGC',
+          },
+        });
+      }
+
+      default:
+        return res.status(400).json({ success: false, message: `Unknown tool '${toolName}'` });
     }
   } catch (err: any) {
-    console.error('Gemini assistant error:', err?.message || err);
-    const reply = generateFallbackResponse(message, language, role);
-    return res.json({ success: true, reply });
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 6. Document OCR & Verification API
+// ---------------- 8. Sahayak AI Intelligent Assistant Endpoint ----------------
+app.post('/api/assistant/chat', async (req, res) => {
+  const {
+    message,
+    language = 'en',
+    role = 'CUSTOMER',
+    bankName = 'Janata Sahakari Bank Ltd.',
+    userEmail = '',
+    customerName = '',
+    history = [],
+  } = req.body;
+
+  if (!message || typeof message !== 'string') {
+    return res.status(400).json({ success: false, message: 'Message text is required.' });
+  }
+
+  const cleanMsg = message.trim();
+  const lower = cleanMsg.toLowerCase();
+  const isEmployee = role === 'BANK_OFFICER';
+
+  // 1. Strict Security Filter (Never collect or expose banking credentials)
+  const pinProbeKeywords = [
+    'atm pin',
+    'upi pin',
+    'my password',
+    'what is my pin',
+    'enter pin',
+    'give me your pin',
+    'cvv',
+    'card cvv',
+    'otp is',
+    'share otp',
+    'enter otp',
+    'पिन',
+    'पासवर्ड',
+    'ઓટીપી',
+  ];
+
+  const hasPinProbe = pinProbeKeywords.some((kw) => lower.includes(kw));
+  if (hasPinProbe && (lower.includes('tell') || lower.includes('enter') || lower.includes('what is') || lower.includes('share') || lower.includes('ask') || lower.includes('give') || lower.includes('is'))) {
+    const securityWarning =
+      language === 'hi'
+        ? `🛡️ **बैंक सुरक्षा चेतावनी**: सारथी (Saarthi) व सहायक AI कभी भी आपका एटीएम पिन (ATM PIN), यूपीआई पिन, नेटबैंकिंग पासवर्ड, सीवीवी (CVV) या ओटीपी (OTP) नहीं मांगते।\n\nकृपया अपनी वित्तीय सुरक्षा हेतु यह गोपनीय विवरण किसी के साथ भी साझा न करें। मैं आपकी वैध बैंकिंग सेवाओं (जैसे नॉमिनी, चेक बुक या शिकायत ट्रैकिंग) में क्या सहायता कर सकता हूँ?`
+        : language === 'gu'
+        ? `🛡️ **બેંક સુરક્ષા ચેતવણી**: સારથી (Saarthi) અને સહાયક AI ક્યારેય તમારો ATM PIN, UPI PIN, નેટબેંકિંગ પાસવર્ડ, CVV કે OTP માંગતા નથી.\n\nતમારી નાણાકીય સુરક્ષા માટે આ વિગતો કોઈને આપશો નહીં. હું તમને કઈ બેંકિંગ સેવામાં મદદ કરી શકું?`
+        : `🛡️ **Bank Security Notice**: Saarthi and Sahayak AI will **NEVER** ask for or accept your ATM PIN, UPI PIN, Net Banking Password, CVV, or OTP.\n\nFor your financial security, never share these confidential credentials with anyone or any online system. How may I assist you with legitimate banking services, document checklists, or application tracking?`;
+
+    return res.json({
+      success: true,
+      reply: securityWarning,
+      sources: [
+        {
+          id: 'RBI-CYBER-SEC',
+          title: 'RBI Cyber Security Framework for Banks',
+          sourceName: 'RBI Circular RBI/2015-16/418',
+          version: 'v2024.1',
+          lastUpdated: '2024-05-15',
+        },
+      ],
+      action: {
+        type: 'SECURITY_ALERT',
+        label: 'Security Notice',
+        data: { advisory: 'PIN / Password disclosure prevented.' },
+      },
+    });
+  }
+
+  // 2. Immediate Crisis & Fraud Escalation
+  const fraudKeywords = ['stolen card', 'lost card', 'fraud', 'unauthorized transaction', 'hacked', 'scammed', 'card blocked', 'चोरी हो गया', 'धोखाधड़ी', 'કાર્ડ ચોરાઈ ગયું'];
+  const isFraudEmergency = fraudKeywords.some((kw) => lower.includes(kw));
+  if (isFraudEmergency) {
+    const fraudAdvice =
+      language === 'hi'
+        ? `🚨 **तत्काल सुरक्षा आपातकालीन निर्देश**:\n\nयदि आपका डेबिट कार्ड खो गया है या अनधिकृत लेन-देन हुआ है:\n1. **24x7 बैंक हेल्पलाइन पर कॉल करें**: तुरंत **1800-209-8800** डायल करके कार्ड ब्लॉक कराएं।\n2. **साइबर क्राइम पोर्टल**: राष्ट्रीय साइबर हेल्पलाइन **1930** पर कॉल करें या [cybercrime.gov.in](https://cybercrime.gov.in) पर रिपोर्ट करें।\n3. **विवाद दर्ज करें**: नीचे दिए गए बटन पर क्लिक करके 'शिकायत निवारण केंद्र' में लेन-देन संदर्भ संख्या दर्ज करें।`
+        : language === 'gu'
+        ? `🚨 **તાત્કાલિક સુરક્ષા નિર્દેશ**:\n\nજો તમારું ડેબિટ કાર્ડ ચોરાઈ ગયું હોય કે અનધિકૃત ટ્રાન્ઝેક્શન થયું હોય:\n1. **24x7 હેલ્પલાઇન**: તાત્કાલિક **1800-209-8800** પર કોલ કરી કાર્ડ બ્લોક કરાવો.\n2. **સાયબર ક્રાઈમ હેલ્પલાઇન**: **1930** પર કોલ કરો.\n3. **ફરિયાદ નોંધાવો**: નીચેના બટન દ્વારા 'ફરિયાદ કેન્દ્ર'માં વિવાદ નોંધાવો.`
+        : `🚨 **Immediate Fraud & Security Emergency Response**:\n\nIf your card is lost, stolen, or you suspect unauthorized transactions:\n1. **24x7 Bank Vigilance Helpline**: Call **1800-209-8800** immediately to hotlist and freeze your card.\n2. **National Cyber Crime Helpline**: Dial **1930** or report online at [cybercrime.gov.in](https://cybercrime.gov.in).\n3. **Zero Liability Protection**: Per RBI guidelines, reporting an unauthorized electronic debit within 3 working days protects you from financial loss.\n4. **Raise Dispute in Saarthi**: Click below to file an instant formal grievance with transaction UTR/RRN.`;
+
+    return res.json({
+      success: true,
+      reply: fraudAdvice,
+      sources: [
+        {
+          id: 'RBI-FRAUD-TAT',
+          title: 'Customer Protection - Limiting Liability of Customers in Unauthorised Electronic Banking Transactions',
+          sourceName: 'RBI Circular DBR.No.Leg.BC.78/09.07.005/2017-18',
+          version: 'v2023.1',
+          lastUpdated: '2024-03-20',
+        },
+      ],
+      action: {
+        type: 'EMERGENCY_SUPPORT',
+        label: 'Contact 24x7 Fraud Desk',
+        data: {
+          tollFree: '1800-209-8800',
+          cyberHelpline: '1930',
+          portalUrl: 'https://cybercrime.gov.in',
+        },
+      },
+    });
+  }
+
+  // 3. Grounded Knowledge Retrieval (RAG)
+  const retrievedDocs = searchVerifiedKnowledge(cleanMsg, role as UserRole, bankName);
+  const topDocs = retrievedDocs.slice(0, 3);
+
+  // 4. Check for Real Tool Action Matches
+  let toolResultData: any = null;
+  let actionPayload: any = null;
+
+  // A. Check for request tracking intent
+  const reqMatch = cleanMsg.match(/REQ-2026-\d{6}/i);
+  if (reqMatch) {
+    const ref = reqMatch[0].toUpperCase();
+    const found = requestsStore.find((r) => r.referenceNumber === ref);
+    if (found) {
+      toolResultData = {
+        type: 'REQUEST_STATUS',
+        request: found,
+      };
+      actionPayload = {
+        type: 'TRACK_REQUEST',
+        label: `View ${found.referenceNumber}`,
+        data: found,
+      };
+    }
+  } else if (lower.includes('track') || lower.includes('my request') || lower.includes('status of my')) {
+    // Return customer's recent requests
+    const userReqs = requestsStore.slice(0, 3);
+    toolResultData = {
+      type: 'RECENT_REQUESTS',
+      requests: userReqs,
+    };
+    actionPayload = {
+      type: 'VIEW_MY_REQUESTS',
+      label: 'Open Requests History',
+      data: userReqs,
+    };
+  }
+
+  // B. Check for complaint tracking intent
+  const compMatch = cleanMsg.match(/GRV-2026-\d{5}/i);
+  if (compMatch) {
+    const cRef = compMatch[0].toUpperCase();
+    const foundComp = complaintsStore.find((c) => c.complaintNumber === cRef);
+    if (foundComp) {
+      toolResultData = {
+        type: 'COMPLAINT_STATUS',
+        complaint: foundComp,
+      };
+      actionPayload = {
+        type: 'TRACK_COMPLAINT',
+        label: `View ${foundComp.complaintNumber}`,
+        data: foundComp,
+      };
+    }
+  }
+
+  // C. Check for financial calculation intent (EMI or FD returns)
+  const emiRegex = /(\d+)\s*(lakh|lac|k|thousand)?\s*(at|@)\s*(\d+(\.\d+)?)\s*%\s*(for)?\s*(\d+)\s*(year|yr|month|m)/i;
+  const emiCalcMatch = cleanMsg.match(emiRegex);
+  if (emiCalcMatch) {
+    let p = parseFloat(emiCalcMatch[1]);
+    const pUnit = (emiCalcMatch[2] || '').toLowerCase();
+    if (pUnit.includes('lakh') || pUnit.includes('lac')) p *= 100000;
+    else if (pUnit.includes('k') || pUnit.includes('thousand')) p *= 1000;
+
+    const r = parseFloat(emiCalcMatch[4]);
+    let n = parseInt(emiCalcMatch[7], 10);
+    const nUnit = (emiCalcMatch[8] || '').toLowerCase();
+    if (nUnit.includes('year') || nUnit.includes('yr')) n *= 12;
+
+    if (p > 0 && r > 0 && n > 0) {
+      const monthlyRate = r / (12 * 100);
+      const emi = Math.round((p * monthlyRate * Math.pow(1 + monthlyRate, n)) / (Math.pow(1 + monthlyRate, n) - 1));
+      const totalPayment = emi * n;
+      const totalInterest = totalPayment - p;
+
+      toolResultData = {
+        type: 'EMI_CALCULATION',
+        principal: p,
+        rate: r,
+        tenorMonths: n,
+        emi,
+        totalInterest,
+        totalPayment,
+      };
+    }
+  }
+
+  // D. Check for Kiosk status inquiry
+  if (lower.includes('kiosk') && (lower.includes('status') || lower.includes('health') || lower.includes('alert') || lower.includes('paper') || lower.includes('cassette'))) {
+    toolResultData = {
+      type: 'KIOSK_STATUS_FLEET',
+      kiosks: kiosksStore.slice(0, 3),
+    };
+    actionPayload = {
+      type: 'KIOSK_MANAGEMENT',
+      label: 'View Kiosk Diagnostics',
+      data: kiosksStore,
+    };
+  }
+
+  // 5. Intelligent Fallback Responder (Grounded in Verified Knowledge)
+  const generateGroundedResponse = (): string => {
+    // If tool execution produced immediate live data:
+    if (toolResultData?.type === 'REQUEST_STATUS') {
+      const r = toolResultData.request;
+      if (language === 'hi') {
+        return `आपके आवेदन **${r.referenceNumber}** (${r.serviceName}) की स्थिति: **${r.status}** है।\n• जमा करने की तिथि: ${new Date(r.submittedAt).toLocaleDateString()}\n• अपेक्षित पूर्णता: ${r.estimatedCompletion}\n• अधिकारी टिप्पणी: ${r.officerNotes || 'शाखा द्वारा सत्यापन प्रगति पर है।'}`;
+      }
+      return `Live Status for Application **${r.referenceNumber}** (${r.serviceName}):\n• **Current Status**: **${r.status}**\n• **Submitted On**: ${new Date(r.submittedAt).toLocaleDateString()}\n• **Expected SLA Completion**: ${r.estimatedCompletion}\n• **Officer Remarks**: ${r.officerNotes || 'Document verification in progress at nodal branch.'}`;
+    }
+
+    if (toolResultData?.type === 'COMPLAINT_STATUS') {
+      const c = toolResultData.complaint;
+      return `Grievance **${c.complaintNumber}** (${c.category}):\n• **Current Status**: **${c.status}**\n• **Resolution TAT Deadline**: ${new Date(c.tatDeadline).toLocaleDateString()}\n• **Latest Bank Note**: ${c.resolutionRemarks || 'Investigation in progress under RBI TAT.'}`;
+    }
+
+    if (toolResultData?.type === 'EMI_CALCULATION') {
+      const calc = toolResultData;
+      return `**Loan EMI Computation**:\n• **Loan Amount**: ₹${calc.principal.toLocaleString('en-IN')}\n• **Interest Rate**: ${calc.rate}% p.a.\n• **Tenor**: ${calc.tenorMonths} months (${calc.tenorMonths / 12} years)\n\n• **Estimated Monthly EMI**: **₹${calc.emi.toLocaleString('en-IN')}**\n• **Total Interest Payable**: ₹${calc.totalInterest.toLocaleString('en-IN')}\n• **Total Amount Payable**: ₹${calc.totalPayment.toLocaleString('en-IN')}\n\n*Note: Calculation based on standard diminishing balance method without advance EMI deductions.*`;
+    }
+
+    if (toolResultData?.type === 'KIOSK_STATUS_FLEET') {
+      const list = kiosksStore;
+      const issues = list.filter((k) => k.status !== 'ONLINE');
+      return `**Branch Kiosk Fleet Diagnostics** (${bankName}):\n• Total Active Terminals: ${list.length}\n• Status Overview: ${list.filter((k) => k.status === 'ONLINE').length} Online, ${issues.length} Needs Attention.\n• Terminal Alerts: ${issues.map((k) => `\n  - **${k.name}** (${k.locationDetails}): ${k.activeAlerts.join(', ')}`).join('')}`;
+    }
+
+    // If verified knowledge documents were retrieved:
+    if (topDocs.length > 0) {
+      const doc = topDocs[0];
+      const sourceCitation = `\n\n📌 *Verified Source: ${doc.sourceName} (${doc.version})*`;
+
+      if (language === 'hi') {
+        return `${doc.summary}\n\n${doc.content}${doc.requirements ? `\n\n**आवश्यक दस्तावेज़ / पात्रता**:\n${doc.requirements.map((r) => `• ${r}`).join('\n')}` : ''}${sourceCitation}`;
+      }
+      if (language === 'gu') {
+        return `${doc.summary}\n\n${doc.content}${doc.requirements ? `\n\n**જરૂરી દસ્તાવેજો**:\n${doc.requirements.map((r) => `• ${r}`).join('\n')}` : ''}${sourceCitation}`;
+      }
+      return `${doc.summary}\n\n${doc.content}${doc.requirements ? `\n\n**Verified Requirements**:\n${doc.requirements.map((r) => `• ${r}`).join('\n')}` : ''}${doc.tatDays ? `\n• **Standard TAT**: ${doc.tatDays}` : ''}${sourceCitation}`;
+    }
+
+    // Conversational general assistance
+    if (isEmployee) {
+      return `Greetings Officer. I am **Sahayak AI**, your operational SOP and RBI Master Direction assistant for ${bankName}.\n\nI can assist you with:\n• **RBI Master Directions**: KYC risk categorization (2/8/10-year cycles) & digital re-KYC.\n• **Branch SOPs**: Safe deposit locker break-open committee protocols & cash retention limit breach.\n• **Customer Redressal**: RBI Integrated Ombudsman 30-day turnaround time and statutory penalties.\n• **Kiosk Maintenance**: Passbook printer alignment, cash cassette balancing, and hardware diagnostics.\n\nPlease enter the operational procedure or regulation you wish to consult.`;
+    }
+
+    if (language === 'hi') {
+      return `नमस्ते! मैं सेतु व सारथी का **सहायक AI** बैंकिंग मार्गदर्शक हूँ।\n\nमैं आपकी सहायता कर सकता हूँ:\n• **बिना शाखा जाए सेवाएँ**: खाते में नॉमिनी (Form DA-1) जोड़ना, पता बदलना, चेक बुक मंगाना।\n• **लेन-देन सहायता**: असफल यूपीआई या एटीएम का पैसा कटने पर आरबीआई ऑटो-रिवर्सल नियम।\n• **आवेदन ट्रैकिंग**: अपने आवेदन या शिकायत की स्थिति जांचना।\n• **वित्तीय जानकारी**: एफडी (FD) बनाम आरडी (RD) और लोन ईएमआई (EMI) गणना।\n\nकृपया अपना प्रश्न बताएं!`;
+    }
+
+    if (language === 'gu') {
+      return `નમસ્તે! હું **સહાયક AI**, આપનો ડિજિટલ બેંકિંગ સહાયક છું.\n\nહું તમને નીચેની બાબતોમાં મદદ કરી શકું છું:\n• શાખામાં ગયા વગર નોમિની (DA-1), સરનામું બદલવું અથવા નવી ચેક બુક મેળવવી.\n• નિષ્ફળ UPI ટ્રાન્ઝેક્શન અને RBI રીવર્સલ નિયમો.\n• તમારી અરજી કે ફરિયાદનું સ્ટેટસ તપાસવું.\n• FD vs RD વ્યાજ અને લોન EMI ગણતરી.\n\nઆપનો પ્રશ્ન નીચે લખો!`;
+    }
+
+    return `Hello! I am **Sahayak AI**, your digital banking guide on Saarthi.\n\nI can help you:\n• **Complete Routine Services**: Add a Nominee (Form DA-1), update address, or order personalized cheque books.\n• **Resolve Transaction Issues**: Understand RBI auto-reversal rules (T+1 TAT) for failed UPI debits.\n• **Track Requests & Grievances**: Check live processing status of your applications.\n• **Financial Education**: Calculate loan EMIs or compare Fixed Deposit (FD) vs Recurring Deposit (RD).\n\nWhat would you like assistance with today?`;
+  };
+
+  // 6. Gemini Generative AI Generation with RAG context
+  try {
+    if (aiClient) {
+      const groundedContext = topDocs
+        .map(
+          (d, idx) =>
+            `[DOCUMENT ${idx + 1} - ${d.title}]\nSource: ${d.sourceName} (${d.version}, Updated: ${d.lastUpdated})\nApplicable Bank: ${d.applicableBank}\nAccess Level: ${d.accessLevel}\nContent: ${d.content}\nRequirements: ${(d.requirements || []).join(', ')}\n`
+        )
+        .join('\n\n');
+
+      const liveToolsContext = toolResultData
+        ? `[LIVE BACKEND TOOL DATA]: ${JSON.stringify(toolResultData)}\n`
+        : '';
+
+      const systemPrompt = isEmployee
+        ? `
+You are "Sahayak AI", the official internal banking knowledge and operational SOP assistant for bank staff and branch officers of ${bankName} on the Saarthi Banking Platform.
+
+Core Rules:
+1. Answer the officer's question directly in the first 1-2 sentences.
+2. Ground all answers strictly in official RBI Master Directions, Banking Regulation Act 1949, and standard branch operational SOPs.
+3. If grounded knowledge is available, cite the source name and circular title clearly (e.g. "Per RBI Master Direction on KYC (Updated 2024)...").
+4. Never invent rules, cash limits, or circular numbers.
+5. If live backend tool data is provided, incorporate the exact verified numbers and statuses.
+6. Language: Respond in the requested language (${language}) using formal banking terms.
+`
+        : `
+You are "Sahayak AI", the trusted digital banking guide for customers of ${bankName} on the Saarthi Banking Platform.
+
+Core Rules:
+1. Answer the customer's actual question directly in the first 1-2 sentences.
+2. Explain banking services in simple, accessible, respectful language suitable for customers of all ages and technical abilities.
+3. Use the provided verified bank documents to outline exact requirements, document checklists, and expected turnaround times (TAT).
+4. NEVER invent bank charges, interest rates, or eligibility rules. If information is bank-specific or unverified, state so clearly.
+5. NEVER ask for or accept passwords, ATM PINs, UPI PINs, CVVs, or OTPs.
+6. If live backend tool data is provided, present the real status accurately.
+7. Language: Match the customer's language (${language}: English, Hindi, or Gujarati) including natural colloquial terms.
+`;
+
+      const promptParts = [
+        {
+          text: `${systemPrompt}\n\n[VERIFIED RETRIEVED BANK KNOWLEDGE]:\n${groundedContext || 'No specific document matched; answer using standard banking principles and recommend branch verification.'}\n\n${liveToolsContext}\nCustomer Name: ${customerName || 'Customer'}\nUser Role: ${role}\nLanguage: ${language}\n\nUser Question: ${cleanMsg}`,
+        },
+      ];
+
+      const generatePromise = aiClient.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: [{ role: 'user', parts: promptParts }],
+      });
+
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('AI model timeout')), 4500)
+      );
+
+      const response: any = await Promise.race([generatePromise, timeoutPromise]);
+      let replyText = response.text || generateGroundedResponse();
+
+      // Ensure verified sources are cited
+      const sourcesForClient = topDocs.map((d) => ({
+        id: d.id,
+        title: d.title,
+        sourceName: d.sourceName,
+        version: d.version,
+        lastUpdated: d.lastUpdated,
+      }));
+
+      return res.json({
+        success: true,
+        reply: replyText,
+        sources: sourcesForClient,
+        action: actionPayload,
+      });
+    } else {
+      // Fallback with grounded retrieval
+      const reply = generateGroundedResponse();
+      const sourcesForClient = topDocs.map((d) => ({
+        id: d.id,
+        title: d.title,
+        sourceName: d.sourceName,
+        version: d.version,
+        lastUpdated: d.lastUpdated,
+      }));
+
+      return res.json({
+        success: true,
+        reply,
+        sources: sourcesForClient,
+        action: actionPayload,
+      });
+    }
+  } catch (err: any) {
+    console.warn('Gemini chat fallback invoked:', err?.message || err);
+    const reply = generateGroundedResponse();
+    const sourcesForClient = topDocs.map((d) => ({
+      id: d.id,
+      title: d.title,
+      sourceName: d.sourceName,
+      version: d.version,
+      lastUpdated: d.lastUpdated,
+    }));
+
+    return res.json({
+      success: true,
+      reply,
+      sources: sourcesForClient,
+      action: actionPayload,
+    });
+  }
+});
+
+// ---------------- 9. Document OCR & Verification API ----------------
 app.post('/api/documents/ocr', (req, res) => {
   const { docType, fileName, contentPreview } = req.body;
 
@@ -434,7 +900,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[SetuBank Server] Running on http://localhost:${PORT} in ${isProduction ? 'production' : 'development'} mode.`);
+    console.log(`[Saarthi Server] Running on http://localhost:${PORT} in ${isProduction ? 'production' : 'development'} mode.`);
   });
 }
 

@@ -35,6 +35,7 @@ import {
   Download,
   Calendar,
   Lock,
+  Monitor,
 } from 'lucide-react';
 import {
   BankingRequest,
@@ -71,6 +72,7 @@ interface OfficerDashboardProps {
     remarks?: string
   ) => void;
   onOpenSettings?: () => void;
+  onOpenKioskSimulator?: () => void;
 }
 
 type OfficerNavSection =
@@ -95,6 +97,7 @@ export const OfficerDashboard: React.FC<OfficerDashboardProps> = ({
   onUpdateQueueStatus,
   onUpdateComplaintStatus,
   onOpenSettings,
+  onOpenKioskSimulator,
 }) => {
   const [activeSection, setActiveSection] = useState<OfficerNavSection>('OVERVIEW');
   const [isMobileMoreOpen, setIsMobileMoreOpen] = useState(false);
@@ -594,18 +597,29 @@ export const OfficerDashboard: React.FC<OfficerDashboardProps> = ({
 
             {/* Kiosk Status and Alerts Card */}
             <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div>
                   <h2 className="text-base font-bold text-slate-900">Branch Kiosk Status & Service Alerts</h2>
                   <p className="text-xs text-slate-500">Self-service machines in branch lobby and 24x7 e-Lobby</p>
                 </div>
-                <button
-                  onClick={() => setActiveSection('KIOSKS')}
-                  className="text-xs text-blue-700 hover:text-blue-900 font-semibold flex items-center space-x-1"
-                >
-                  <span>Manage Kiosks</span>
-                  <ChevronRight className="w-3.5 h-3.5" />
-                </button>
+                <div className="flex items-center space-x-2">
+                  {onOpenKioskSimulator && (
+                    <button
+                      onClick={onOpenKioskSimulator}
+                      className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition-colors shadow-xs"
+                    >
+                      <Monitor className="w-3.5 h-3.5 text-teal-400" />
+                      <span>Launch Terminal Mode</span>
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setActiveSection('KIOSKS')}
+                    className="text-xs text-blue-700 hover:text-blue-900 font-semibold flex items-center space-x-1 px-2.5 py-1.5 bg-blue-50 rounded-xl"
+                  >
+                    <span>Manage Kiosks</span>
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -923,8 +937,17 @@ export const OfficerDashboard: React.FC<OfficerDashboardProps> = ({
                 </p>
               </div>
 
-              {/* Status summary */}
-              <div className="flex items-center space-x-2 text-xs">
+              {/* Status summary & Terminal Launch */}
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                {onOpenKioskSimulator && (
+                  <button
+                    onClick={onOpenKioskSimulator}
+                    className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold flex items-center space-x-1.5 transition-colors shadow-xs"
+                  >
+                    <Monitor className="w-3.5 h-3.5" />
+                    <span>Launch Kiosk Terminal Mode</span>
+                  </button>
+                )}
                 <span className="px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 font-semibold border border-emerald-200">
                   {onlineKiosks} Online
                 </span>

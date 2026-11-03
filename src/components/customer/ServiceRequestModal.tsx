@@ -526,7 +526,7 @@ export const ServiceRequestModal: React.FC<ServiceRequestModalProps> = ({
                 Attach Supporting Proofs (DPDP Act Masked)
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                Upload scans or use pre-verified records from your SetuBank Document Vault.
+                Upload scans or use pre-verified records from your Saarthi Document Vault.
               </p>
             </div>
 
@@ -660,7 +660,7 @@ export const ServiceRequestModal: React.FC<ServiceRequestModalProps> = ({
                 />
                 <span className="text-xs text-slate-700 leading-relaxed">
                   I hereby declare that the particulars furnished above are true and correct. I authorize
-                  SetuBank and its nodal branch officers to verify these credentials under the
+                  Saarthi and its nodal branch officers to verify these credentials under the
                   <strong> Digital Personal Data Protection Act (DPDP 2023)</strong> and RBI Master
                   Directions on Customer Service.
                 </span>

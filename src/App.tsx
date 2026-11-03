@@ -24,6 +24,7 @@ import { AssistantDrawer } from './components/customer/AssistantDrawer';
 import { OfficerDashboard } from './components/officer/OfficerDashboard';
 import { LoginPortal } from './components/auth/LoginPortal';
 import { SettingsModal } from './components/settings/SettingsModal';
+import { SmartKioskTerminal } from './components/kiosk/SmartKioskTerminal';
 
 import {
   AuthUser,
@@ -98,10 +99,10 @@ export default function App() {
   const [documents, setDocuments] = useState<DocumentItem[]>(INITIAL_DOCUMENTS);
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>(INITIAL_AUDIT_LOGS);
 
-  // Modals
   const [selectedServiceForModal, setSelectedServiceForModal] =
     useState<BankingService | null>(null);
   const [isAssistantOpen, setIsAssistantOpen] = useState<boolean>(false);
+  const [isKioskSimulatorOpen, setIsKioskSimulatorOpen] = useState<boolean>(false);
 
   const [sessionNotice, setSessionNotice] = useState<string | null>(null);
 
@@ -146,12 +147,14 @@ export default function App() {
     } catch (e) {}
   };
 
-  const handleLogout = (reason?: string) => {
+  const handleLogout = (reason?: any) => {
     setCurrentUser(null);
     setRole('CUSTOMER');
     setActiveCustomerTab('home');
-    if (reason) {
+    if (typeof reason === 'string' && reason) {
       setSessionNotice(reason);
+    } else {
+      setSessionNotice(null);
     }
     try {
       localStorage.removeItem('saarthi_active_user');
@@ -402,7 +405,7 @@ export default function App() {
         onOpenAssistant={() => setIsAssistantOpen(true)}
         currentUser={currentUser}
         onOpenSettings={() => setIsSettingsOpen(true)}
-        onLogout={handleLogout}
+        onLogout={() => handleLogout()}
       />
 
       {/* Role Notice Pill if on Officer Portal */}
@@ -522,6 +525,7 @@ export default function App() {
                 }}
                 popularServices={services}
                 onOpenAssistant={() => setIsAssistantOpen(true)}
+                onOpenKioskSimulator={() => setIsKioskSimulatorOpen(true)}
               />
             )}
 
@@ -628,6 +632,7 @@ export default function App() {
             onUpdateQueueStatus={handleUpdateQueueStatus}
             onUpdateComplaintStatus={handleUpdateComplaintStatus}
             onOpenSettings={() => setIsSettingsOpen(true)}
+            onOpenKioskSimulator={() => setIsKioskSimulatorOpen(true)}
           />
         )}
       </main>
@@ -691,6 +696,14 @@ export default function App() {
         language={language}
         onLanguageChange={handleLanguageChange}
         onUpdateUserPreferences={handleUpdateUserPreferences}
+      />
+
+      {/* Smart Banking Kiosk Touchscreen Simulator */}
+      <SmartKioskTerminal
+        isOpen={isKioskSimulatorOpen}
+        onClose={() => setIsKioskSimulatorOpen(false)}
+        bankName={selectedBank}
+        defaultLanguage={language}
       />
     </div>
   );
